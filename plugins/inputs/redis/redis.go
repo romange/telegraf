@@ -21,7 +21,7 @@ type Redis struct {
 	Servers  []string
 	Password string
 	tls.ClientConfig
-
+	Sections []string
 	Log telegraf.Logger
 
 	clients     []Client
@@ -29,7 +29,7 @@ type Redis struct {
 }
 
 type Client interface {
-	Info() *redis.StringCmd
+	Info(name string) *redis.StringCmd
 	BaseTags() map[string]string
 }
 
@@ -38,8 +38,8 @@ type RedisClient struct {
 	tags   map[string]string
 }
 
-func (r *RedisClient) Info() *redis.StringCmd {
-	return r.client.Info("ALL")
+func (r *RedisClient) Info(name string) *redis.StringCmd {
+	return r.client.Info(name)
 }
 
 func (r *RedisClient) BaseTags() map[string]string {
@@ -73,6 +73,9 @@ var sampleConfig = `
   # tls_key = "/etc/telegraf/key.pem"
   ## Use TLS but skip chain & host verification
   # insecure_skip_verify = true
+
+  ## Optional sections to fetch
+  # sections = ["Keyspace", "Stats"]
 `
 
 func (r *Redis) SampleConfig() string {
@@ -96,6 +99,10 @@ func (r *Redis) init(acc telegraf.Accumulator) error {
 
 	if len(r.Servers) == 0 {
 		r.Servers = []string{"tcp://localhost:6379"}
+	}
+
+	if len(r.Sections) == 0 {
+		r.Sections = []string{"ALL"}
 	}
 
 	r.clients = make([]Client, len(r.Servers))
@@ -187,12 +194,16 @@ func (r *Redis) Gather(acc telegraf.Accumulator) error {
 }
 
 func (r *Redis) gatherServer(client Client, acc telegraf.Accumulator) error {
-	info, err := client.Info().Result()
-	if err != nil {
-		return err
-	}
+	var accum_str string
 
-	rdr := strings.NewReader(info)
+	for _, section := range r.Sections {
+		info, err := client.Info(section).Result()
+		if err != nil {
+			return err
+		}
+		accum_str += info
+	}
+	rdr := strings.NewReader(accum_str)
 	return gatherInfoOutput(rdr, acc, client.BaseTags())
 }
 
@@ -304,8 +315,9 @@ func gatherInfoOutput(
 	var keyspace_hitrate float64 = 0.0
 	if keyspace_hits != 0 || keyspace_misses != 0 {
 		keyspace_hitrate = float64(keyspace_hits) / float64(keyspace_hits+keyspace_misses)
+		fields["keyspace_hitrate"] = keyspace_hitrate
 	}
-	fields["keyspace_hitrate"] = keyspace_hitrate
+
 	acc.AddFields("redis", fields, tags)
 	return nil
 }
